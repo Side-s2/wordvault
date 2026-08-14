@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+data_smoke/
+smoke_out.txt
+smoke_err.txt
+ui_shots/
+downloads/
+build/
+.flet/
