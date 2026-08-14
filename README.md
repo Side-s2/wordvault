@@ -2,7 +2,7 @@
 
 基于 Python + Flet 的背单词应用：自己添加单词/短语，自动匹配中文释义，按
 「熟练度 + 间隔复习」算法安排每天复习，并提供详细统计。支持 Windows 桌面预览
-与安卓手机（已按小米 15s Pro 设计）。
+与安卓手机。
 
 ## 功能
 
@@ -37,7 +37,7 @@ tests/                  单元测试
 ## 在电脑上预览
 
 ```powershell
-& "C:\Users\Side_\AppData\Local\Programs\Python\Python313\python.exe" main.py
+& "C:\Users\Username\AppData\Local\Programs\Python\Python313\python.exe" main.py
 ```
 
 窗口会以手机竖屏尺寸（420×860）打开。数据保存在 `data/wordvault.db`。
@@ -45,7 +45,7 @@ tests/                  单元测试
 运行测试：
 
 ```powershell
-& "C:\Users\Side_\AppData\Local\Programs\Python\Python313\python.exe" -m unittest discover -s tests
+& "C:\Users\Username\AppData\Local\Programs\Python\Python313\python.exe" -m unittest discover -s tests
 ```
 
 ## 打包安卓 APK
@@ -53,13 +53,13 @@ tests/                  单元测试
 在项目目录执行（首次会自动下载安装 JDK 17 和 Android SDK，需联网，耗时较长）：
 
 ```powershell
-& "C:\Users\Side_\AppData\Local\Programs\Python\Python313\Scripts\flet.exe" build apk
+& "C:\Users\Username\AppData\Local\Programs\Python\Python313\Scripts\flet.exe" build apk
 ```
 
 产物在 `build/apk/app-release.apk`。应用需要联网权限（在线翻译/例句），
 打包时默认已包含 INTERNET 权限。
 
-## 安装到小米 15s Pro
+## 安装到手机
 
 方式一（最简单）：
 
