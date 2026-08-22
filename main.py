@@ -13,6 +13,7 @@ from wordvault.db import Database
 from wordvault.dict_provider import DictProvider
 from wordvault.theme import apply_theme_mode, build_dark_theme, build_theme
 from wordvault.views.add_view import AddView
+from wordvault.views.reading_view import ReadingView
 from wordvault.views.review_view import ReviewView
 from wordvault.views.settings import open_settings
 from wordvault.views.stats_view import StatsView
@@ -62,14 +63,17 @@ def main(page: ft.Page) -> None:
 
     add_view = AddView(ctx)
     review_view = ReviewView(ctx)
+    reading_view = ReadingView(ctx)
     stats_view = StatsView(ctx)
     ctx.register(add_view)
     ctx.register(review_view)
+    ctx.register(reading_view)
     ctx.register(stats_view)
 
     tabs = [
         {"label": "添加", "icon": ft.Icons.ADD, "view": add_view},
         {"label": "复习", "icon": ft.Icons.SCHOOL, "view": review_view},
+        {"label": "阅读", "icon": ft.Icons.AUTO_STORIES, "view": reading_view},
         {"label": "统计", "icon": ft.Icons.INSIGHTS, "view": stats_view},
     ]
 
@@ -104,6 +108,7 @@ def main(page: ft.Page) -> None:
         destinations=[
             ft.NavigationBarDestination(icon=ft.Icons.ADD, label="添加"),
             ft.NavigationBarDestination(icon=ft.Icons.SCHOOL, label="复习"),
+            ft.NavigationBarDestination(icon=ft.Icons.AUTO_STORIES, label="阅读"),
             ft.NavigationBarDestination(icon=ft.Icons.INSIGHTS, label="统计"),
         ],
         on_change=lambda e: switch(int(e.control.selected_index)),
@@ -121,12 +126,20 @@ def main(page: ft.Page) -> None:
 
     if SMOKE:
         page.run_task(
-            _smoke_flow, page, ctx, switch, add_view, review_view, stats_view, nav
+            _smoke_flow,
+            page,
+            ctx,
+            switch,
+            add_view,
+            review_view,
+            reading_view,
+            stats_view,
+            nav,
         )
 
 
 async def _smoke_flow(
-    page, ctx, switch, add_view, review_view, stats_view, nav
+    page, ctx, switch, add_view, review_view, reading_view, stats_view, nav
 ) -> None:
     """冒烟测试：自动切页、真实加词、复习作答，输出标记后退出。"""
     try:
@@ -154,7 +167,7 @@ async def _smoke_flow(
 
             ev = _FakeEvent()
             ev.control = _FakeEvent()
-            ev.control.selected_index = 2
+            ev.control.selected_index = 3
             nav.on_change(ev)
             await asyncio.sleep(1.0)
 
@@ -219,6 +232,10 @@ async def _smoke_flow(
         add_view.input_box.value = "school, family\nbook 书, water\nmusic"
         await add_view.on_parse()
         await snap("02_add_preview")
+        add_view.open_meaning_editor(0)
+        await asyncio.sleep(0.5)
+        await snap("02b_meaning_editor")
+        page.pop_dialog()
         await add_view.on_confirm()
 
         await asyncio.sleep(0.8)
@@ -235,6 +252,11 @@ async def _smoke_flow(
             await snap("04_review_reveal")
         else:
             print("SMOKE_REVIEW_EMPTY", flush=True)
+
+        await asyncio.sleep(0.8)
+        switch(2)
+        print("SMOKE_TAB_READING", flush=True)
+        await snap("04b_reading")
 
         # 注入 30 天模拟复习记录，用于验证统计图表渲染
         word_ids = [w.id for w in ctx.db.list_words()][:3]
@@ -264,7 +286,7 @@ async def _smoke_flow(
                 ctx.db._conn.commit()
 
         await asyncio.sleep(0.8)
-        switch(2)
+        switch(3)
         print("SMOKE_TAB_STATS", flush=True)
         await snap("05_stats")
         await asyncio.sleep(0.8)

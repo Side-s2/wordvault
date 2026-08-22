@@ -1,4 +1,4 @@
-"""界面一：单词/短语添加（批量输入 + 翻译预览）与增删查改。"""
+"""界面一：单词/短语添加与词库管理（添加 / 词库两个分段）。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import flet as ft
 from wordvault.db import Example, Meaning, Word
 from wordvault.dict_provider import split_pos, uk_phonetic
 from wordvault.parse_input import parse_input_text
+from wordvault.theme import all_border
 
 
 SOURCE_LABELS = {
@@ -38,11 +39,9 @@ def parse_meaning_lines(text: str) -> list[Meaning]:
 
 
 def meanings_to_text(meanings: list[Meaning]) -> str:
-    lines = []
-    for m in meanings:
-        prefix = f"{m.pos} " if m.pos else ""
-        lines.append(f"{prefix}{m.text}".strip())
-    return "\n".join(lines)
+    return "\n".join(
+        (f"{m.pos} {m.text}".strip() if m.pos else m.text) for m in meanings
+    )
 
 
 def examples_to_text(examples: list[Example]) -> str:
@@ -87,8 +86,16 @@ class AddView:
             dense=True,
         )
         self.want_examples = ft.Checkbox(
-            label="联网获取例句（仅在揭晓答案时显示）",
+            label="联网获取例句",
             value=True,
+        )
+        self.learn_mode_dropdown = ft.Dropdown(
+            value="write",
+            height=46,
+            options=[
+                ft.dropdown.Option("write", "写作型（会拼写）"),
+                ft.dropdown.Option("read", "阅读型（认识即可）"),
+            ],
         )
         self.parse_button = ft.FilledButton(
             content=ft.Text("解析并翻译"),
@@ -98,7 +105,7 @@ class AddView:
         self.parse_progress = ft.ProgressRing(width=24, height=24, visible=False)
         self.status_text = ft.Text("", size=12)
         self.preview_list = ft.ListView(
-            height=150, spacing=8, auto_scroll=True, visible=False
+            expand=True, spacing=8, auto_scroll=True, visible=False
         )
         self.confirm_button = ft.FilledButton(
             content=ft.Text("确认添加"),
@@ -129,68 +136,76 @@ class AddView:
         self.word_count = ft.Text("", size=13)
         self.word_list = ft.ListView(expand=True, spacing=6)
 
-        self.add_tile = ft.ExpansionTile(
-            title=ft.Text(
-                "添加单词 / 短语",
-                size=15,
-                weight=ft.FontWeight.BOLD,
-            ),
-            expanded=True,
-            controls=[
-                ft.Container(
-                    padding=ft.Padding(12, 4, 12, 12),
-                    content=ft.Column(
-                        spacing=8,
-                        controls=[
-                            self.input_box,
-                            self.want_examples,
-                            ft.Row(
-                                controls=[
-                                    self.parse_button,
-                                    self.parse_progress,
-                                ],
-                                spacing=10,
-                            ),
-                            self.status_text,
-                            self.preview_list,
-                            ft.Row(
-                                controls=[
-                                    self.confirm_button,
-                                    self.confirm_count,
-                                ],
-                                spacing=10,
-                            ),
-                        ],
+        add_page = ft.Container(
+            padding=8,
+            content=ft.Column(
+                expand=True,
+                spacing=8,
+                controls=[
+                    self.input_box,
+                    ft.Row(
+                        controls=[self.want_examples, self.learn_mode_dropdown],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
-                )
-            ],
+                    ft.Row(
+                        controls=[self.parse_button, self.parse_progress],
+                        spacing=10,
+                    ),
+                    self.status_text,
+                    self.preview_list,
+                    ft.Row(
+                        controls=[self.confirm_button, self.confirm_count],
+                        spacing=10,
+                    ),
+                ],
+            ),
         )
 
-        self.root = ft.Column(
+        library_page = ft.Container(
+            padding=8,
+            content=ft.Column(
+                expand=True,
+                spacing=8,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "我的单词",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            self.word_count,
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    ft.Row(
+                        controls=[self.search_box, self.sort_dropdown],
+                        spacing=8,
+                    ),
+                    self.word_list,
+                ],
+            ),
+        )
+
+        self.root = ft.Tabs(
+            length=2,
+            selected_index=0,
             expand=True,
-            spacing=8,
-            controls=[
-                ft.Card(content=self.add_tile),
-                ft.Row(
-                    controls=[
-                        ft.Text(
-                            "我的单词",
-                            size=14,
-                            weight=ft.FontWeight.BOLD,
-                        ),
-                        self.word_count,
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
-                ft.Row(
-                    controls=[
-                        self.search_box,
-                        self.sort_dropdown,
-                    ],
-                    spacing=8,
-                ),
-                self.word_list,
-            ],
+            content=ft.Column(
+                expand=True,
+                controls=[
+                    ft.TabBar(
+                        tabs=[
+                            ft.Tab(label="添加"),
+                            ft.Tab(label="词库"),
+                        ]
+                    ),
+                    ft.TabBarView(
+                        expand=True,
+                        controls=[add_page, library_page],
+                    ),
+                ],
+            ),
         )
 
     # ---------------- 解析与添加 ----------------
@@ -231,7 +246,6 @@ class AddView:
                     multiline=True,
                     min_lines=2,
                     max_lines=5,
-                    label="释义（词性. 意思，每行一条）",
                     dense=True,
                     text_size=14,
                 )
@@ -260,11 +274,12 @@ class AddView:
             result = item["result"]
             label = SOURCE_LABELS.get(result.source, "未匹配")
             color = SOURCE_COLORS.get(result.source, "#9AA0AC")
+            meanings_preview = (item["box"].value or "").strip() or "未匹配，点击补充释义"
             card = ft.Card(
                 content=ft.Container(
                     padding=10,
                     content=ft.Column(
-                        spacing=4,
+                        spacing=6,
                         controls=[
                             ft.Row(
                                 controls=[
@@ -286,7 +301,6 @@ class AddView:
                                         icon=ft.Icons.CLOSE,
                                         icon_size=18,
                                         tooltip="移除",
-                                        data=index,
                                         on_click=lambda e, i=index: self.remove_pending(i),
                                     ),
                                 ]
@@ -298,16 +312,24 @@ class AddView:
                             )
                             if result.phonetic
                             else ft.Container(),
-                            item["box"],
+                            ft.Container(
+                                content=ft.Text(
+                                    meanings_preview,
+                                    size=13,
+                                    color=ft.Colors.GREY_800,
+                                    max_lines=3,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                                padding=ft.Padding(8, 6, 8, 6),
+                                border=all_border(ft.Colors.GREY_300),
+                                border_radius=8,
+                                on_click=lambda e, i=index: self.open_meaning_editor(i),
+                            ),
                             ft.Text(
-                                "例句：" + result.examples[0].zh,
-                                size=12,
-                                color=ft.Colors.GREY_700,
-                                max_lines=1,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                            )
-                            if result.examples
-                            else ft.Container(),
+                                "点击上方释义区域可编辑",
+                                size=11,
+                                color=ft.Colors.GREY_600,
+                            ),
                         ],
                     ),
                 )
@@ -316,6 +338,40 @@ class AddView:
         self.preview_list.controls = controls
         self.preview_list.visible = bool(self.pending)
         self.page.update()
+
+    def open_meaning_editor(self, index: int) -> None:
+        if not (0 <= index < len(self.pending)):
+            return
+        item = self.pending[index]
+        editor = ft.TextField(
+            value=item["box"].value,
+            multiline=True,
+            min_lines=8,
+            max_lines=16,
+            autofocus=True,
+            label="释义（词性. 意思，每行一条）",
+            text_size=16,
+        )
+
+        def save(_):
+            item["box"].value = editor.value
+            self.page.pop_dialog()
+            self._rebuild_preview()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Text(item["word"]),
+            content=ft.Container(content=editor),
+            actions=[
+                ft.TextButton(
+                    content=ft.Text("取消"),
+                    on_click=lambda e: self.page.pop_dialog(),
+                ),
+                ft.FilledButton(content=ft.Text("保存释义"), on_click=save),
+            ],
+        )
+        self.page.show_dialog(dialog)
 
     def remove_pending(self, index: int) -> None:
         if 0 <= index < len(self.pending):
@@ -333,6 +389,7 @@ class AddView:
         self._busy = True
         self.parse_button.disabled = True
         self.confirm_button.disabled = True
+        learn_mode = self.learn_mode_dropdown.value or "write"
         try:
             to_add: list[tuple[str, str, list[Meaning], list[Example], str]] = []
             for item in self.pending:
@@ -373,6 +430,7 @@ class AddView:
                     meanings=meanings,
                     examples=examples,
                     source=source,
+                    learn_mode=learn_mode,
                 )
                 if created:
                     added += 1
@@ -387,7 +445,6 @@ class AddView:
             self.status_text.value = ""
             self.confirm_button.visible = False
             self.confirm_count.value = ""
-            self.add_tile.expanded = False
             self.ctx.snack(f"已添加 {added} 个单词，跳过重复 {dup} 个")
             self.refresh_word_list()
             self.ctx.notify_data_changed()
@@ -430,6 +487,7 @@ class AddView:
         )
         if not meanings_text:
             meanings_text = "（暂无释义，点击编辑补充）"
+        mode_label = "写作" if w.learn_mode == "write" else "阅读"
         tile = ft.Card(
             content=ft.Container(
                 padding=ft.Padding(12, 10, 6, 10),
@@ -446,6 +504,20 @@ class AddView:
                                     weight=ft.FontWeight.W_600,
                                     expand=True,
                                 ),
+                                ft.Container(
+                                    content=ft.Text(
+                                        mode_label,
+                                        size=11,
+                                        color=ft.Colors.WHITE,
+                                    ),
+                                    bgcolor=(
+                                        "#5B67F1"
+                                        if w.learn_mode == "write"
+                                        else "#3E8BD9"
+                                    ),
+                                    padding=ft.Padding(6, 2, 6, 2),
+                                    border_radius=8,
+                                ),
                                 ft.Text(
                                     phonetic,
                                     size=12,
@@ -457,7 +529,6 @@ class AddView:
                                     icon=ft.Icons.EDIT,
                                     icon_size=18,
                                     tooltip="编辑",
-                                    data=w.id,
                                     on_click=lambda e, wid=w.id: self.open_edit_dialog(wid),
                                 ),
                             ],
@@ -500,6 +571,14 @@ class AddView:
             min_lines=2,
             max_lines=8,
         )
+        learn_mode_box = ft.Dropdown(
+            label="学习类型",
+            value=w.learn_mode or "write",
+            options=[
+                ft.dropdown.Option("write", "写作型（会拼写）"),
+                ft.dropdown.Option("read", "阅读型（认识即可）"),
+            ],
+        )
 
         def save(_):
             ok = self.db.update_word(
@@ -508,6 +587,7 @@ class AddView:
                 phonetic_box.value,
                 parse_meaning_lines(meanings_box.value),
                 parse_example_lines(examples_box.value),
+                learn_mode_box.value or "write",
             )
             if not ok:
                 self.ctx.snack("保存失败：单词为空或与已有单词重复", error=True)
@@ -562,25 +642,27 @@ class AddView:
             ],
         )
 
-        def ask_delete(_):
-            self.page.show_dialog(confirm)
-
-        def ask_reset(_):
-            self.page.show_dialog(confirm_reset)
-
-        delete_button = ft.TextButton(content=ft.Text("删除"), on_click=ask_delete)
-        reset_button = ft.TextButton(content=ft.Text("重置进度"), on_click=ask_reset)
+        delete_button = ft.TextButton(
+            content=ft.Text("删除"),
+            on_click=lambda e: self.page.show_dialog(confirm),
+        )
+        reset_button = ft.TextButton(
+            content=ft.Text("重置进度"),
+            on_click=lambda e: self.page.show_dialog(confirm_reset),
+        )
         cancel_button = ft.TextButton(
             content=ft.Text("取消"),
             on_click=lambda e: self.page.pop_dialog(),
         )
         save_button = ft.FilledButton(content=ft.Text("保存"), on_click=save)
+
         content_height = 480
         if self.page.height:
-            content_height = min(max(int(self.page.height * 0.58), 320), 540)
+            content_height = min(max(int(self.page.height * 0.62), 360), 560)
 
         dialog = ft.AlertDialog(
             modal=True,
+            scrollable=True,
             title=ft.Text("编辑单词"),
             content=ft.Container(
                 height=content_height,
@@ -592,6 +674,7 @@ class AddView:
                         phonetic_box,
                         meanings_box,
                         examples_box,
+                        learn_mode_box,
                         ft.Text(
                             f"添加时间：{w.created_at}",
                             size=12,

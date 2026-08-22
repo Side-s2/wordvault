@@ -19,12 +19,27 @@ TIERS = [
     (-1.0, "生疏"),
 ]
 
+WRITE_TIERS = [
+    (0.90, "已掌握"),
+    (0.60, "熟练"),
+    (0.35, "学习中"),
+    (-1.0, "生疏"),
+]
 
-def tier_of(proficiency: float) -> str:
-    for threshold, name in TIERS:
+
+def tier_of(proficiency: float, learn_mode: str = "read") -> str:
+    tiers = WRITE_TIERS if learn_mode == "write" else TIERS
+    for threshold, name in tiers:
         if proficiency >= threshold:
             return name
     return "生疏"
+
+
+def question_kind(learn_mode: str, reps: int) -> str:
+    """决定某个词本次用哪种题型：writing 前 2 次四选一，之后拼写。"""
+    if learn_mode == "write" and reps >= 2:
+        return "spell"
+    return "choice"
 
 
 def clamp01(value: float) -> float:

@@ -1,4 +1,4 @@
-"""界面二：单词复习（四选一为主，词库不足时降级为自评）。"""
+"""界面二：单词复习（阅读四选一 + 写作拼写填字母，统一队列）。"""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import flet as ft
 
 from wordvault.db import Database, Word
 from wordvault.dict_provider import uk_phonetic
-from wordvault.scheduler import apply_review, build_queue, tier_of
-from wordvault.theme import SUCCESS, DANGER
+from wordvault.scheduler import apply_review, build_queue, question_kind
+from wordvault.theme import SUCCESS, DANGER, all_border
 
 
 class ReviewView:
@@ -31,6 +31,14 @@ class ReviewView:
         self.last_choice = ""
         self.last_answer_text = ""
         self.question_at = 0.0
+
+        self.question_mode = "choice"  # choice / spell
+        self.current_word: Word | None = None
+        self.spell_units: list[dict] = []
+        self.spell_typed = ""
+        self.spell_tile_row: ft.Row | None = None
+        self.spell_input: ft.TextField | None = None
+        self.spell_dont_button: ft.TextButton | None = None
 
         self.content = ft.Container(expand=True, padding=8)
         self.root = self.content
@@ -106,12 +114,56 @@ class ReviewView:
         self.last_choice = ""
         self.question_at = time.monotonic()
         word_id = self.queue[self.index]
-        word, _state = self.db.word_with_state(word_id)
+        word, state = self.db.word_with_state(word_id)
         self.current_word = word
-        self.options = self._make_options(word)
-        self.correct_text = self._correct_option_text(word)
 
-        header = ft.Column(
+        if (
+            question_kind(word.learn_mode, state.get("reps", 0)) == "spell"
+            and word.meanings
+        ):
+            self.question_mode = "spell"
+            self.options = None
+            self.correct_text = word.word
+        else:
+            self.question_mode = "choice"
+            self.options = self._make_options(word)
+            self.correct_text = self._correct_option_text(word)
+
+        header = self._build_header()
+        if self.question_mode == "spell":
+            question, prompt, answer_area = self._build_spell_area(word)
+        else:
+            question, prompt, answer_area = self._build_choice_area(word)
+
+        self.prompt_text = prompt
+        self.reveal_area = ft.Container(
+            expand=True, padding=ft.Padding(12, 10, 12, 10)
+        )
+        self.summary_area = ft.Container(visible=False)
+        self.next_button = ft.FilledButton(
+            content=ft.Text("下一个 ▶"),
+            height=48,
+            visible=False,
+            on_click=lambda e: self.next_question(),
+        )
+        self.answer_buttons = answer_area
+        self.content.content = ft.Column(
+            expand=True,
+            spacing=8,
+            controls=[
+                header,
+                question,
+                prompt,
+                answer_area,
+                self.summary_area,
+                self.reveal_area,
+                self.next_button,
+            ],
+        )
+        self.page.update()
+
+    def _build_header(self) -> ft.Control:
+        return ft.Column(
             spacing=6,
             controls=[
                 ft.Text(
@@ -153,6 +205,7 @@ class ReviewView:
             ],
         )
 
+    def _build_choice_area(self, word: Word):
         question = ft.Container(
             padding=ft.Padding(16, 26, 16, 26),
             alignment=ft.Alignment.CENTER,
@@ -163,29 +216,29 @@ class ReviewView:
                 text_align=ft.TextAlign.CENTER,
             ),
         )
-
         if self.options:
-            option_buttons = []
-            for option in self.options:
-                option_buttons.append(
-                    ft.OutlinedButton(
-                        content=ft.Text(
-                            option, size=14, text_align=ft.TextAlign.CENTER
-                        ),
-                        expand=True,
-                        data=option,
-                        on_click=lambda e, opt=option: self.on_answer(opt),
-                    )
+            option_buttons = [
+                ft.OutlinedButton(
+                    content=ft.Text(
+                        option, size=14, text_align=ft.TextAlign.CENTER
+                    ),
+                    expand=True,
+                    data=option,
+                    on_click=lambda e, opt=option: self.on_answer(opt),
                 )
+                for option in self.options
+            ]
             option_buttons.append(
                 ft.TextButton(
                     content=ft.Text("不认识", size=13),
                     expand=True,
-                    data="__dont__",
                     on_click=lambda e: self.on_answer("__dont__"),
                 )
             )
             answer_area = ft.Column(controls=option_buttons, spacing=8)
+            prompt = ft.Text(
+                "请选择正确的中文意思", size=13, color=ft.Colors.GREY_600
+            )
         else:
             answer_area = ft.Row(
                 controls=[
@@ -205,37 +258,199 @@ class ReviewView:
                 ],
                 spacing=10,
             )
+            prompt = ft.Text(
+                "这个词你认识吗？", size=13, color=ft.Colors.GREY_600
+            )
+        return question, prompt, answer_area
 
-        self.prompt_text = (
-            ft.Text("请选择正确的中文意思", size=13, color=ft.Colors.GREY_600)
-            if self.options
-            else ft.Text("这个词你认识吗？", size=13, color=ft.Colors.GREY_600)
+    def _build_spell_area(self, word: Word):
+        meaning_text = "；".join(
+            f"{m.pos} {m.text}".strip() if m.pos else m.text
+            for m in word.meanings[:4]
         )
-        self.reveal_area = ft.Container(
-            expand=True, padding=ft.Padding(12, 10, 12, 10)
+        question = ft.Container(
+            padding=ft.Padding(16, 22, 16, 22),
+            alignment=ft.Alignment.CENTER,
+            content=ft.Text(
+                meaning_text,
+                size=22,
+                weight=ft.FontWeight.BOLD,
+                text_align=ft.TextAlign.CENTER,
+            ),
         )
-        self.summary_area = ft.Container(visible=False)
-        self.next_button = ft.FilledButton(
-            content=ft.Text("下一个 ▶"),
-            height=48,
-            visible=False,
-            on_click=lambda e: self.next_question(),
+        prompt = ft.Text(
+            "请拼写对应英文（每个字母一格）",
+            size=13,
+            color=ft.Colors.GREY_600,
         )
-        self.answer_buttons = answer_area
-        self.content.content = ft.Column(
-            expand=True,
+
+        self._build_spell_units(word.word)
+        self.spell_tile_row = ft.Row(
+            controls=self._make_tiles(), wrap=True, spacing=6, run_spacing=6
+        )
+        self.spell_input = ft.TextField(
+            autofocus=True,
+            on_change=self._on_spell_change,
+            opacity=0,
+            height=1,
+            width=1,
+        )
+        self.spell_dont_button = ft.TextButton(
+            content=ft.Text("不会拼写", size=13),
+            on_click=lambda e: self._dont_spell(),
+        )
+
+        hint = self._spell_hint_area(word)
+        answer_area = ft.Column(
             spacing=8,
             controls=[
-                header,
-                question,
-                self.prompt_text,
-                answer_area,
-                self.summary_area,
-                self.reveal_area,
-                self.next_button,
+                self.spell_tile_row,
+                hint,
+                self.spell_input,
+                self.spell_dont_button,
             ],
         )
-        self.page.update()
+        return question, prompt, answer_area
+
+    def _build_spell_units(self, answer: str) -> None:
+        units: list[dict] = []
+        for token in answer.split(" "):
+            if units:
+                units.append({"kind": "space"})
+            for ch in token:
+                if ch in "'-":
+                    units.append({"kind": "fixed", "ch": ch})
+                else:
+                    units.append({"kind": "slot", "exp": ch, "ch": None})
+        self.spell_units = units
+        self.spell_typed = ""
+
+    def _make_tiles(self, reveal: bool = False) -> list[ft.Control]:
+        controls: list[ft.Control] = []
+        for unit in self.spell_units:
+            if unit["kind"] == "space":
+                controls.append(ft.Container(width=14))
+                continue
+            if unit["kind"] == "fixed":
+                controls.append(
+                    ft.Text(unit["ch"], size=22, weight=ft.FontWeight.BOLD)
+                )
+                continue
+            letter = unit.get("ch") or ""
+            bgcolor = "#F8F9FA"
+            border_color = ft.Colors.GREY_400
+            text_color = None
+            if reveal:
+                ok = (letter.lower() == (unit.get("exp") or "").lower())
+                bgcolor = "#E6F4EC" if ok else "#FBE9E7"
+                border_color = SUCCESS if ok else DANGER
+                text_color = SUCCESS if ok else DANGER
+            controls.append(
+                ft.Container(
+                    width=34,
+                    height=46,
+                    alignment=ft.Alignment.CENTER,
+                    border=all_border(border_color),
+                    border_radius=8,
+                    bgcolor=bgcolor,
+                    content=ft.Text(
+                        letter,
+                        size=22,
+                        weight=ft.FontWeight.BOLD,
+                        color=text_color,
+                    ),
+                    on_click=lambda e: self._focus_spell(),
+                )
+            )
+        return controls
+
+    def _spell_hint_area(self, word: Word) -> ft.Control:
+        controls: list[ft.Control] = []
+        phonetic = uk_phonetic(word.phonetic)
+        if phonetic:
+            controls.append(
+                ft.Text(
+                    f"音标：{phonetic}",
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                )
+            )
+        if word.examples:
+            controls.append(
+                ft.Text(
+                    f"例句（中文）：{word.examples[0].zh}",
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                )
+            )
+        if not controls:
+            return ft.Container()
+        return ft.Container(
+            content=ft.Column(spacing=2, controls=controls),
+            padding=ft.Padding(0, 4, 0, 0),
+        )
+
+    def _focus_spell(self) -> None:
+        if self.spell_input is not None:
+            self.spell_input.focus()
+
+    def _on_spell_change(self, e) -> None:
+        raw = e.control.value or ""
+        accepted = "".join(ch for ch in raw if ch.isalpha())
+        if len(accepted) > len(self.spell_typed):
+            for ch in accepted[len(self.spell_typed):]:
+                self._fill_next_slot(ch)
+        elif len(accepted) < len(self.spell_typed):
+            for _ in range(len(self.spell_typed) - len(accepted)):
+                self._clear_last_slot()
+        self.spell_typed = accepted
+        if self.spell_tile_row is not None:
+            self.spell_tile_row.controls = self._make_tiles()
+        if self._all_slots_filled():
+            self.page.update()
+            self.submit_spell()
+        else:
+            self.page.update()
+
+    def _fill_next_slot(self, ch: str) -> None:
+        for unit in self.spell_units:
+            if unit["kind"] == "slot" and unit.get("ch") is None:
+                unit["ch"] = ch
+                return
+
+    def _clear_last_slot(self) -> None:
+        for unit in reversed(self.spell_units):
+            if unit["kind"] == "slot" and unit.get("ch"):
+                unit["ch"] = None
+                return
+
+    def _all_slots_filled(self) -> bool:
+        return all(
+            unit.get("ch") for unit in self.spell_units if unit["kind"] == "slot"
+        )
+
+    def submit_spell(self) -> None:
+        if self.answered:
+            return
+        typed = "".join(
+            unit.get("ch") or "" for unit in self.spell_units if unit["kind"] == "slot"
+        )
+        target = "".join(
+            unit["exp"] for unit in self.spell_units if unit["kind"] == "slot"
+        )
+        self._finish_answer(
+            typed.lower() == target.lower(),
+            typed or "（未填写）",
+            "spell",
+            self.correct_text,
+        )
+
+    def _dont_spell(self) -> None:
+        if self.answered:
+            return
+        self._finish_answer(False, "不会拼写", "spell", self.correct_text)
+
+    # ---------------- 选项构造 ----------------
 
     @staticmethod
     def _correct_option_text(word: Word) -> str:
@@ -247,8 +462,6 @@ class ReviewView:
         return "；".join(parts)
 
     def _make_options(self, word: Word) -> list[str] | None:
-        """构造同构的四个选项：正确答案保留完整释义，干扰项也拼接多条
-        其他单词的“词性+释义”，使长度和结构相近，避免一眼看出答案。"""
         labels = []
         for m in word.meanings[:3]:
             label = f"{m.pos} {m.text}".strip() if m.pos else m.text
@@ -303,9 +516,6 @@ class ReviewView:
     def on_answer(self, choice: str) -> None:
         if self.answered:
             return
-        self.answered = True
-        self.last_choice = choice
-
         if self.options:
             if choice == "__dont__":
                 is_correct = False
@@ -313,12 +523,19 @@ class ReviewView:
             else:
                 is_correct = choice == self.correct_text
                 answer_text = choice
-            result = "correct" if is_correct else "wrong"
+            mode = "choice"
         else:
             is_correct = choice == "__know__"
-            result = "correct" if is_correct else "wrong"
             answer_text = "认识" if is_correct else "不认识"
+            mode = "self"
+        self._finish_answer(
+            is_correct, answer_text, mode, self.correct_text or answer_text
+        )
 
+    def _finish_answer(
+        self, is_correct: bool, answer_text: str, mode: str, correct_answer: str
+    ) -> None:
+        self.answered = True
         self.last_answer_text = answer_text
         if is_correct:
             self.correct_cnt += 1
@@ -327,16 +544,16 @@ class ReviewView:
 
         word_id = self.queue[self.index]
         state = self.db.ensure_state(word_id)
-        new_state = apply_review(state, result)
+        new_state = apply_review(state, "correct" if is_correct else "wrong")
         ms = int((time.monotonic() - self.question_at) * 1000)
         self.db.save_review(
             word_id=word_id,
             state=new_state,
-            result=result,
+            result="correct" if is_correct else "wrong",
             answer=answer_text,
-            correct_answer=self.correct_text or answer_text,
+            correct_answer=correct_answer,
             ms=ms,
-            mode="choice" if self.options else "self",
+            mode=mode,
             reviewed_at=new_state["last_reviewed_at"],
         )
 
@@ -388,17 +605,16 @@ class ReviewView:
             ),
         )
 
-        meaning_lines = [
-            ft.Text(
-                f"{m.pos} {m.text}".strip() if m.pos else m.text,
-                size=16,
-            )
-            for m in word.meanings
-        ]
-        if not meaning_lines:
-            meaning_lines = [ft.Text("（暂无释义，可到单词页补充）", size=14)]
-
         reveal_controls: list[ft.Control] = []
+        if self.question_mode == "spell":
+            reveal_controls.append(
+                ft.Text(
+                    f"正确拼写：{word.word}",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=SUCCESS if is_correct else DANGER,
+                )
+            )
         if word.phonetic:
             reveal_controls.append(
                 ft.Text(
@@ -415,7 +631,14 @@ class ReviewView:
                 color=ft.Colors.GREY_700,
             )
         )
-        reveal_controls.extend(meaning_lines)
+        meaning_lines = [
+            ft.Text(
+                f"{m.pos} {m.text}".strip() if m.pos else m.text,
+                size=16,
+            )
+            for m in word.meanings
+        ]
+        reveal_controls.extend(meaning_lines or [ft.Text("（暂无释义）", size=14)])
         if word.examples:
             reveal_controls.append(
                 ft.Text(
@@ -441,13 +664,20 @@ class ReviewView:
         )
         self.summary_area.content = banner
         self.summary_area.visible = True
-        self.answer_buttons.visible = False
         self.prompt_text.visible = False
+
+        if self.question_mode == "spell":
+            self.spell_tile_row.controls = self._make_tiles(reveal=True)
+            self.spell_input.visible = False
+            self.spell_dont_button.visible = False
+            self.answer_buttons.visible = True
+        else:
+            self.answer_buttons.visible = False
+
         self.next_button.content = ft.Text(
             "下一个 ▶" if self.index + 1 < len(self.queue) else "查看结果"
         )
         self.next_button.visible = True
-
         self.page.update()
 
     def next_question(self) -> None:

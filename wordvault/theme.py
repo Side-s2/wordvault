@@ -48,3 +48,9 @@ def apply_theme_mode(page: ft.Page, mode: str) -> None:
     }
     page.theme_mode = mapping.get(mode, ft.ThemeMode.SYSTEM)
     page.update()
+
+
+def all_border(color: str, width: float = 1.0) -> ft.Border:
+    """四条边等宽的边框，避免在调用处重复构造 BorderSide。"""
+    side = ft.BorderSide(width, color)
+    return ft.Border(side, side, side, side)

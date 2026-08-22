@@ -37,8 +37,8 @@ while ($attempt -lt 3 -and $exitCode -ne 0) {
       --artifact wordvault `
       --product $product `
       --org com.vibecoding `
-      --build-version 1.1.3 `
-      --build-number 5 `
+      --build-version 1.2.3 `
+      --build-number 9 `
       --splash-color "#5B67F1" `
       --splash-dark-color "#1B1B2F" `
       --yes `

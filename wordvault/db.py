@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS words (
     meanings TEXT NOT NULL DEFAULT '[]',
     examples TEXT NOT NULL DEFAULT '[]',
     source TEXT NOT NULL DEFAULT 'manual',
+    learn_mode TEXT NOT NULL DEFAULT 'write',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -79,8 +80,23 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS articles (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'The Guardian',
+    section TEXT NOT NULL DEFAULT '',
+    section_id TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL,
+    body TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    last_opened_at TEXT,
+    finished INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_state_due ON learning_state(due_at);
 CREATE INDEX IF NOT EXISTS idx_log_time ON review_log(reviewed_at);
+CREATE INDEX IF NOT EXISTS idx_articles_opened ON articles(last_opened_at);
 """
 
 DEFAULT_SETTINGS = {
@@ -124,6 +140,7 @@ class Word:
     meanings: list[Meaning] = field(default_factory=list)
     examples: list[Example] = field(default_factory=list)
     source: str = "manual"
+    learn_mode: str = "write"
     created_at: str = ""
     updated_at: str = ""
 
@@ -174,6 +191,7 @@ def _row_to_word(row: sqlite3.Row) -> Word:
         meanings=_loads_meaning_list(row["meanings"]),
         examples=_loads_example_list(row["examples"]),
         source=row["source"],
+        learn_mode=row["learn_mode"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -195,11 +213,39 @@ class Database:
     def _migrate(self) -> None:
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._ensure_word_columns()
+            self._ensure_article_columns()
             for key, value in DEFAULT_SETTINGS.items():
                 self._conn.execute(
                     "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
                     (key, value),
                 )
+            self._conn.commit()
+
+    def _ensure_article_columns(self) -> None:
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(articles)").fetchall()
+        }
+        if "section_id" not in cols:
+            self._conn.execute(
+                "ALTER TABLE articles ADD COLUMN section_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "finished" not in cols:
+            self._conn.execute(
+                "ALTER TABLE articles ADD COLUMN finished INTEGER NOT NULL DEFAULT 0"
+            )
+        self._conn.commit()
+
+    def _ensure_word_columns(self) -> None:
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(words)").fetchall()
+        }
+        if "learn_mode" not in cols:
+            self._conn.execute(
+                "ALTER TABLE words ADD COLUMN learn_mode TEXT NOT NULL DEFAULT 'write'"
+            )
             self._conn.commit()
 
     def close(self) -> None:
@@ -248,6 +294,7 @@ class Database:
         meanings: list[Meaning] | None = None,
         examples: list[Example] | None = None,
         source: str = "manual",
+        learn_mode: str = "write",
         created_at: str | None = None,
     ) -> Word | None:
         """添加单词并初始化学习状态；重复返回 None。"""
@@ -259,13 +306,15 @@ class Database:
             try:
                 cur = self._conn.execute(
                     "INSERT INTO words(word, phonetic, meanings, examples, source, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "learn_mode, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         word,
                         phonetic or "",
                         _dumps_meaning_list(meanings or []),
                         _dumps_example_list(examples or []),
                         source or "manual",
+                        learn_mode or "write",
                         created,
                         created,
                     ),
@@ -323,6 +372,7 @@ class Database:
         phonetic: str,
         meanings: list[Meaning],
         examples: list[Example],
+        learn_mode: str = "write",
     ) -> bool:
         word = word.strip()
         if not word:
@@ -331,12 +381,13 @@ class Database:
             try:
                 cur = self._conn.execute(
                     "UPDATE words SET word = ?, phonetic = ?, meanings = ?, "
-                    "examples = ?, updated_at = ? WHERE id = ?",
+                    "examples = ?, learn_mode = ?, updated_at = ? WHERE id = ?",
                     (
                         word,
                         phonetic or "",
                         _dumps_meaning_list(meanings),
                         _dumps_example_list(examples),
+                        learn_mode or "write",
                         now_str(),
                         word_id,
                     ),
@@ -545,7 +596,7 @@ class Database:
 
         with self._lock:
             rows = self._conn.execute(
-                "SELECT s.reps, s.proficiency FROM learning_state s "
+                "SELECT s.reps, s.proficiency, w.learn_mode FROM learning_state s "
                 "JOIN words w ON w.id = s.word_id"
             ).fetchall()
         dist = {"未开始": 0, "生疏": 0, "学习中": 0, "熟练": 0, "已掌握": 0}
@@ -553,7 +604,7 @@ class Database:
             if row["reps"] <= 0:
                 dist["未开始"] += 1
             else:
-                dist[tier_of(row["proficiency"])] += 1
+                dist[tier_of(row["proficiency"], row["learn_mode"])] += 1
         return dist
 
     def due_overview(self) -> dict:
@@ -580,6 +631,92 @@ class Database:
             "new_today": int(new["c"] or 0),
             "due_next_week": int(week["c"] or 0),
         }
+
+    # ---------------- 阅读文章 ----------------
+
+    def upsert_article(self, article: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO articles(id, title, source, section, url, body, "
+                "section_id, published_at, fetched_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET title = excluded.title, "
+                "source = excluded.source, section = excluded.section, "
+                "section_id = excluded.section_id, "
+                "url = excluded.url, body = excluded.body, "
+                "published_at = excluded.published_at, "
+                "fetched_at = excluded.fetched_at",
+                (
+                    str(article["id"]),
+                    str(article.get("title", "")),
+                    str(article.get("source", "The Guardian")),
+                    str(article.get("section", "")),
+                    str(article.get("url", "")),
+                    str(article.get("body", "")),
+                    str(article.get("section_id", "")),
+                    str(article.get("published_at", "")),
+                    now_str(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_articles(self, section_id: str | None = None) -> list[dict]:
+        with self._lock:
+            if section_id:
+                rows = self._conn.execute(
+                    "SELECT * FROM articles WHERE section_id = ? "
+                    "ORDER BY published_at DESC",
+                    (section_id,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM articles ORDER BY published_at DESC"
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_article(self, article_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM articles WHERE id = ?", (article_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def mark_article_opened(self, article_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE articles SET last_opened_at = ? WHERE id = ?",
+                (now_str(), article_id),
+            )
+            self._conn.commit()
+
+    def reading_history(self, limit: int = 100) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM articles WHERE last_opened_at IS NOT NULL "
+                "ORDER BY last_opened_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_article_finished(self, article_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE articles SET finished = 1 WHERE id = ?", (article_id,)
+            )
+            self._conn.commit()
+
+    def delete_article(self, article_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM articles WHERE id = ?", (article_id,))
+            self._conn.commit()
+
+    def clear_unopened_articles(self) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM articles WHERE last_opened_at IS NULL"
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     # ---------------- 备份 ----------------
 
@@ -616,7 +753,8 @@ class Database:
                 try:
                     self._conn.execute(
                         "INSERT INTO words(id, word, phonetic, meanings, examples, "
-                        "source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "source, learn_mode, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             w["id"],
                             w["word"],
@@ -624,6 +762,7 @@ class Database:
                             w.get("meanings", "[]"),
                             w.get("examples", "[]"),
                             w.get("source", "manual"),
+                            w.get("learn_mode", "write"),
                             w.get("created_at") or now_str(),
                             w.get("updated_at") or now_str(),
                         ),
@@ -697,11 +836,12 @@ class Database:
                     local_id = int(row["id"])
                     self._conn.execute(
                         "UPDATE words SET phonetic = ?, meanings = ?, examples = ?, "
-                        "updated_at = ? WHERE id = ?",
+                        "learn_mode = ?, updated_at = ? WHERE id = ?",
                         (
                             w.get("phonetic", ""),
                             w.get("meanings", "[]"),
                             w.get("examples", "[]"),
+                            w.get("learn_mode", "write"),
                             w.get("updated_at") or now_str(),
                             local_id,
                         ),
@@ -710,13 +850,15 @@ class Database:
                 else:
                     cur = self._conn.execute(
                         "INSERT INTO words(word, phonetic, meanings, examples, "
-                        "source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "source, learn_mode, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             text,
                             w.get("phonetic", ""),
                             w.get("meanings", "[]"),
                             w.get("examples", "[]"),
                             w.get("source", "manual"),
+                            w.get("learn_mode", "write"),
                             w.get("created_at") or now_str(),
                             w.get("updated_at") or now_str(),
                         ),
